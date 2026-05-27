@@ -26,14 +26,14 @@ def download_audio(url):
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '192',
+            # تم تقليل الجودة إلى 48kbps لضغط حجم الملف بشكل هائل وتفادي خطأ الـ 25MB
+            'preferredquality': '48', 
         }],
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     return "audio.mp3"
 
-# دالة لتحويل التوقيت بالثواني إلى تنسيق SRT المعتمد (HH:MM:SS,mmm)
 def format_time(seconds):
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -47,21 +47,27 @@ def send_welcome(message):
 
 @bot.message_handler(func=lambda message: message.text.startswith('http'))
 def handle_link(message):
-    bot.reply_to(message, "جاري معالجة الرابط واستخراج الصوت، يرجى الانتظار...")
+    bot.reply_to(message, "جاري معالجة الرابط واستخراج الصوت وتصغير حجمه، يرجى الانتظار...")
     
     try:
         audio_file = download_audio(message.text)
-        bot.send_message(message.chat.id, "تم استخراج الصوت! جاري تحويله إلى نص (SRT)...")
+        
+        # فحص حجم الملف المرفوع للتأكد (احتياطي)
+        file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+        if file_size_mb > 24.5:
+            bot.reply_to(message, f"حجم الصوت المستخرج ({file_size_mb:.1f}MB) لا يزال أكبر من الحد المسموح به (25MB) للفيديوهات الطويلة جداً.")
+            if os.path.exists(audio_file): os.remove(audio_file)
+            return
+
+        bot.send_message(message.chat.id, "تم استخراج الصوت وضغطه! جاري تحويله إلى نص (SRT)...")
         
         with open(audio_file, "rb") as file:
-            # طلبنا verbose_json للحصول على التوقيت الدقيق للأجزاء
             transcription = client.audio.transcriptions.create(
               file=(audio_file, file.read()),
               model="whisper-large-v3",
               response_format="verbose_json",
             )
         
-        # بناء ملف SRT يدوياً من البيانات القادمة من Groq
         srt_content = ""
         if hasattr(transcription, 'segments'):
             for i, segment in enumerate(transcription.segments, start=1):
@@ -70,7 +76,6 @@ def handle_link(message):
                 text = segment['text'].strip()
                 srt_content += f"{i}\n{start} --> {end}\n{text}\n\n"
         else:
-            # حلا بديل في حال لم تتوفر الأجزاء
             srt_content = f"1\n00:00:00,000 --> 00:00:10,000\n{transcription.text}"
 
         srt_filename = "subtitle.srt"
@@ -85,6 +90,7 @@ def handle_link(message):
 
     except Exception as e:
         bot.reply_to(message, f"حدث خطأ أثناء المعالجة: {str(e)}")
+        if os.path.exists("audio.mp3"): os.remove("audio.mp3")
 
 if __name__ == "__main__":
     t = threading.Thread(target=keep_alive)
